@@ -280,6 +280,11 @@ struct RenderParams {
   float scannerUnsharpAmount = 0.7f;
 };
 
+enum class ImageMemoryDomain : int32_t {
+  Host = 0,
+  CudaDevice = 1,
+};
+
 struct ImageView {
   const void *data = nullptr;
   int32_t x1 = 0;
@@ -289,6 +294,7 @@ struct ImageView {
   int32_t rowBytes = 0;
   int32_t components = 4;
   int32_t bytesPerComponent = 4;
+  ImageMemoryDomain memoryDomain = ImageMemoryDomain::Host;
 };
 
 struct MutableImageView {
@@ -300,6 +306,7 @@ struct MutableImageView {
   int32_t rowBytes = 0;
   int32_t components = 4;
   int32_t bytesPerComponent = 4;
+  ImageMemoryDomain memoryDomain = ImageMemoryDomain::Host;
 };
 
 struct RenderWindow {

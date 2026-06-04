@@ -4,6 +4,7 @@
 #include "SpektraTooltips.h"
 
 #include "ofxImageEffect.h"
+#include "ofxGPURender.h"
 #include "ofxColour.h"
 #include "ofxMemory.h"
 #include "ofxMessage.h"
@@ -25,6 +26,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -87,6 +89,7 @@ OfxPropertySuiteV1 *gPropHost = nullptr;
 OfxParameterSuiteV1 *gParamHost = nullptr;
 OfxMessageSuiteV1 *gMessageHost = nullptr;
 int gPluginImageAnchor = 0;
+std::atomic<uint32_t> gHostRenderLogCount{0};
 
 enum class PluginFlavor : int32_t {
   Flow = 0,
@@ -415,7 +418,7 @@ constexpr ParamDefault double3DDefault(const char *name, double x, double y, dou
 
 inline constexpr ParamDefault kParamDefaults[] = {
   intDefault("process", 0),
-  intDefault("inputColorSpace", 0),
+  intDefault("inputColorSpace", 3),
   intDefault("outputRole", 0),
   intDefault("sdrOutputColorSpace", 8),
   intDefault("sceneOutputColorSpace", 3),
@@ -815,6 +818,150 @@ int componentsForString(const char *components) {
   return 0;
 }
 
+std::filesystem::path hostDebugLogPath() {
+#if defined _WIN32
+  char tempPath[MAX_PATH]{};
+  const DWORD length = GetTempPathA(MAX_PATH, tempPath);
+  if (length > 0 && length < MAX_PATH) {
+    return std::filesystem::path(tempPath) / "SpektraFilmOFX.log";
+  }
+#endif
+  return std::filesystem::temp_directory_path() / "SpektraFilmOFX.log";
+}
+
+bool hostDebugLogVerbose() {
+  const char *value = std::getenv("SPEKTRAFILM_DEBUG_LOG");
+  if (!value || !*value) {
+    return false;
+  }
+  std::string text(value);
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return text != "0" && text != "off" && text != "false" && text != "no";
+}
+
+void appendHostLog(const std::string &message, bool important = false) {
+  if (!important && !hostDebugLogVerbose()) {
+    return;
+  }
+  try {
+    std::ofstream out(hostDebugLogPath(), std::ios::app);
+    if (!out) {
+      return;
+    }
+    std::time_t now = std::time(nullptr);
+    std::tm localTime{};
+#if defined _WIN32
+    localtime_s(&localTime, &now);
+#else
+    localtime_r(&now, &localTime);
+#endif
+    out << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S")
+        << " [" << kPluginLabel << "] " << message << "\n";
+  } catch (...) {
+  }
+}
+
+const char *statusName(OfxStatus status) {
+  switch (status) {
+    case kOfxStatOK:
+      return "OK";
+    case kOfxStatFailed:
+      return "Failed";
+    case kOfxStatErrFatal:
+      return "Fatal";
+    case kOfxStatErrUnknown:
+      return "Unknown";
+    case kOfxStatErrFormat:
+      return "Format";
+    case kOfxStatErrMemory:
+      return "Memory";
+    default:
+      return "Other";
+  }
+}
+
+std::string imageViewSummary(const spektrafilm::ImageView &view) {
+  std::ostringstream out;
+  out << "bounds=(" << view.x1 << "," << view.y1 << " "
+      << (view.x1 + view.width) << "," << (view.y1 + view.height) << ")"
+      << " size=" << view.width << "x" << view.height
+      << " rowBytes=" << view.rowBytes
+      << " components=" << view.components
+      << " bytesPerComponent=" << view.bytesPerComponent
+      << " memoryDomain="
+      << (view.memoryDomain == spektrafilm::ImageMemoryDomain::CudaDevice ? "cuda-device" : "host")
+      << " data=" << (view.data ? "yes" : "no");
+  return out.str();
+}
+
+std::string imageViewSummary(const spektrafilm::MutableImageView &view) {
+  spektrafilm::ImageView immutable{};
+  immutable.data = view.data;
+  immutable.x1 = view.x1;
+  immutable.y1 = view.y1;
+  immutable.width = view.width;
+  immutable.height = view.height;
+  immutable.rowBytes = view.rowBytes;
+  immutable.components = view.components;
+  immutable.bytesPerComponent = view.bytesPerComponent;
+  immutable.memoryDomain = view.memoryDomain;
+  return imageViewSummary(immutable);
+}
+
+std::string renderWindowSummary(const spektrafilm::RenderWindow &window) {
+  std::ostringstream out;
+  out << "(" << window.x1 << "," << window.y1 << " "
+      << window.x2 << "," << window.y2 << ")";
+  return out.str();
+}
+
+std::string rendererDiagnosticsSummary(const spektrafilm::RendererDiagnostics &diagnostics) {
+  std::ostringstream out;
+  out << "backend=" << diagnostics.backendName
+      << " device=\"" << diagnostics.deviceName << "\""
+      << " passes=" << diagnostics.passCount
+      << " commandMs=" << diagnostics.commandBufferMs
+      << " sourceCopyMs=" << diagnostics.sourceCopyMs
+      << " outputCopyMs=" << diagnostics.outputCopyMs
+      << " cudaH2DMs=" << diagnostics.cudaHostToDeviceMs
+      << " cudaD2HMs=" << diagnostics.cudaDeviceToHostMs
+      << " cudaKernelMs=" << diagnostics.cudaKernelMs
+      << " uploadBytes=" << diagnostics.uploadBytes
+      << " cudaPinnedBytes=" << diagnostics.cudaPinnedStagingBytes
+      << " cudaDeviceBytes=" << diagnostics.cudaDeviceScratchBytes
+      << " sourceNoCopy=" << (diagnostics.sourceNoCopy ? "yes" : "no")
+      << " destinationNoCopy=" << (diagnostics.destinationNoCopy ? "yes" : "no")
+      << " cudaMappedHostMemory=" << (diagnostics.cudaMappedHostMemory ? "yes" : "no")
+      << " cudaTransferMode=" << diagnostics.cudaTransferMode
+      << " passTiming=" << diagnostics.passTimingMode
+      << " paths={halation:" << (diagnostics.halationPath ? "yes" : "no")
+      << ",cameraDiffusion:" << (diagnostics.cameraDiffusionPath ? "yes" : "no")
+      << ",printDiffusion:" << (diagnostics.printDiffusionPath ? "yes" : "no")
+      << ",dir:" << (diagnostics.dirPath ? "yes" : "no")
+      << ",grain:" << (diagnostics.productionGrainPath ? "yes" : "no")
+      << ",grainSynthesis:" << (diagnostics.grainSynthesisPath ? "yes" : "no")
+      << ",scanner:" << (diagnostics.finalPostProcessPath ? "yes" : "no") << "}";
+  if (!diagnostics.passes.empty()) {
+    out << " passNames=";
+    const size_t count = std::min<size_t>(diagnostics.passes.size(), 16);
+    for (size_t i = 0; i < count; ++i) {
+      if (i != 0) {
+        out << ",";
+      }
+      out << diagnostics.passes[i].name;
+    }
+    if (diagnostics.passes.size() > count) {
+      out << ",...";
+    }
+  }
+  if (!diagnostics.backendFallbackReason.empty()) {
+    out << " fallback=\"" << diagnostics.backendFallbackReason << "\"";
+  }
+  return out.str();
+}
+
 OfxStatus fetchImageView(
   OfxImageClipHandle clip,
   OfxTime time,
@@ -1132,7 +1279,7 @@ spektrafilm::RenderParams readParams(InstanceData *data, OfxTime time) {
     ? spektrafilm::ProcessMode::ScanNegative
     : spektrafilm::ProcessMode::PrintSimulation;
   params.rgbToRawMethod = rgbToRawMethodFromChoice(getIntAtTime(data->rgbToRawMethod, time, 0));
-  params.inputColorSpace = static_cast<spektrafilm::ColorSpace>(getIntAtTime(data->inputColorSpace, time, 0));
+  params.inputColorSpace = static_cast<spektrafilm::ColorSpace>(getIntAtTime(data->inputColorSpace, time, 3));
   params.outputRole = outputRoleForFlavor(getIntAtTime(data->outputRole, time, 0));
   if (params.outputRole == spektrafilm::OutputRole::SceneHandoff) {
     const int sceneIndex = std::clamp(
@@ -2934,6 +3081,26 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
   }
 
   data->renderer = spektrafilm::createNativeRenderer();
+  {
+    std::ostringstream log;
+    log << "createInstance version=" << SPEKTRAFILM_VERSION_STRING
+        << " flavor=" << pluginFlavorName()
+        << " renderer=" << (data->renderer ? "created" : "null");
+    if (data->renderer) {
+      log << " available=" << (data->renderer->isAvailable() ? "yes" : "no");
+      const auto &diagnostics = data->renderer->lastDiagnostics();
+      if (!diagnostics.backendName.empty()) {
+        log << " backend=" << diagnostics.backendName;
+      }
+      if (!diagnostics.deviceName.empty()) {
+        log << " device=\"" << diagnostics.deviceName << "\"";
+      }
+      if (!data->renderer->lastError().empty()) {
+        log << " error=\"" << data->renderer->lastError() << "\"";
+      }
+    }
+    appendHostLog(log.str(), true);
+  }
   rememberCurrentPrinterLights(data);
   syncConditionalParamVisibility(data);
   gPropHost->propSetPointer(effectProps, kOfxPropInstanceData, 0, data);
@@ -3602,8 +3769,12 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs, OfxPr
 
   OfxTime time = 0.0;
   OfxRectI renderWindow{};
+  int cudaEnabled = 0;
   gPropHost->propGetDouble(inArgs, kOfxPropTime, 0, &time);
   gPropHost->propGetIntN(inArgs, kOfxImageEffectPropRenderWindow, 4, &renderWindow.x1);
+#if defined(_WIN32) && defined(SPEKTRAFILM_ENABLE_CUDA)
+  gPropHost->propGetInt(inArgs, kOfxImageEffectPropCudaEnabled, 0, &cudaEnabled);
+#endif
 
   OfxPropertySetHandle sourceImage = nullptr;
   OfxPropertySetHandle outputImage = nullptr;
@@ -3614,20 +3785,55 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs, OfxPr
   try {
     status = fetchImageView(data->sourceClip, time, &sourceImage, source);
     if (status != kOfxStatOK) {
+      std::ostringstream log;
+      log << "render source fetch failed status=" << statusName(status)
+          << "(" << status << ") source=" << imageViewSummary(source);
+      appendHostLog(log.str(), true);
       throw status;
     }
     status = fetchMutableImageView(data->outputClip, time, &outputImage, output);
     if (status != kOfxStatOK) {
+      std::ostringstream log;
+      log << "render output fetch failed status=" << statusName(status)
+          << "(" << status << ") output=" << imageViewSummary(output);
+      appendHostLog(log.str(), true);
       throw status;
+    }
+    // Resolve's CUDA extension supplies device pointers here, including pre-OFX-1.5 hosts.
+    if (cudaEnabled != 0) {
+      source.memoryDomain = spektrafilm::ImageMemoryDomain::CudaDevice;
+      output.memoryDomain = spektrafilm::ImageMemoryDomain::CudaDevice;
     }
 
     spektrafilm::RenderWindow window{renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2};
     spektrafilm::RenderParams params = readParams(data, time);
     if (!data->renderer->render(source, output, window, params, time)) {
+      std::ostringstream log;
+      log << "render failed time=" << time
+          << " window=" << renderWindowSummary(window)
+          << " process=" << static_cast<int>(params.process)
+          << " outputMode=" << static_cast<int>(params.renderOutput)
+          << " source=" << imageViewSummary(source)
+          << " output=" << imageViewSummary(output)
+          << " error=\"" << data->renderer->lastError() << "\"";
+      appendHostLog(log.str(), true);
       if (gMessageHost) {
         gMessageHost->message(effect, kOfxMessageError, "spektrafilmRenderer", "%s", data->renderer->lastError().c_str());
       }
       status = kOfxStatFailed;
+    } else {
+      const uint32_t logIndex = gHostRenderLogCount.fetch_add(1u);
+      if (hostDebugLogVerbose() || logIndex < 200u) {
+        std::ostringstream log;
+        log << "render ok time=" << time
+            << " window=" << renderWindowSummary(window)
+            << " process=" << static_cast<int>(params.process)
+            << " outputMode=" << static_cast<int>(params.renderOutput)
+            << " source=" << imageViewSummary(source)
+            << " output=" << imageViewSummary(output)
+            << " " << rendererDiagnosticsSummary(data->renderer->lastDiagnostics());
+        appendHostLog(log.str(), true);
+      }
     }
   } catch (OfxStatus caught) {
     status = caught;
@@ -3639,6 +3845,11 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs, OfxPr
 
   releaseImage(sourceImage);
   releaseImage(outputImage);
+  if (status != kOfxStatOK) {
+    std::ostringstream log;
+    log << "render returning status=" << statusName(status) << "(" << status << ")";
+    appendHostLog(log.str(), true);
+  }
   return gEffectHost->abort(effect) ? kOfxStatOK : status;
 }
 
@@ -3732,7 +3943,7 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle) {
     "Rec.709 Gamma 2.2",
     "Rec.709 Gamma 2.4"
   };
-  defineChoice(paramSet, "inputColorSpace", "Input Color Space", colorSpaces, static_cast<int>(sizeof(colorSpaces) / sizeof(colorSpaces[0])), 0, "colorGroup");
+  defineChoice(paramSet, "inputColorSpace", "Input Color Space", colorSpaces, static_cast<int>(sizeof(colorSpaces) / sizeof(colorSpaces[0])), 3, "colorGroup");
   const char *outputRoles[] = {"Display Out SDR", "Display Out HDR", "Scene Handoff (Dev)"};
   defineChoice(paramSet, "outputRole", "Output Role", outputRoles, outputRoleOptionCountForFlavor(), 0, "colorGroup");
   defineChoice(paramSet, "sdrOutputColorSpace", "Output Color Space", sdrOutputColorSpaces, static_cast<int>(sizeof(sdrOutputColorSpaces) / sizeof(sdrOutputColorSpaces[0])), 8, "colorGroup");
@@ -3924,7 +4135,8 @@ OfxStatus describe(OfxImageEffectHandle effect) {
   gPropHost->propSetString(props, kOfxImageEffectPluginPropGrouping, 0, "spektrafilm OFX");
   gPropHost->propSetString(props, kOfxImageEffectPropSupportedContexts, 0, kOfxImageEffectContextFilter);
 #if defined(_WIN32)
-  gPropHost->propSetString(props, kOfxImageEffectPropSupportedPixelDepths, 0, kOfxBitDepthHalf);
+  gPropHost->propSetString(props, kOfxImageEffectPropSupportedPixelDepths, 0, kOfxBitDepthFloat);
+  gPropHost->propSetString(props, kOfxImageEffectPropSupportedPixelDepths, 1, kOfxBitDepthHalf);
 #else
   gPropHost->propSetString(props, kOfxImageEffectPropSupportedPixelDepths, 0, kOfxBitDepthHalf);
   gPropHost->propSetString(props, kOfxImageEffectPropSupportedPixelDepths, 1, kOfxBitDepthFloat);
@@ -3934,6 +4146,9 @@ OfxStatus describe(OfxImageEffectHandle effect) {
   gPropHost->propSetInt(props, kOfxImageEffectPropSupportsMultipleClipDepths, 0, 0);
   gPropHost->propSetInt(props, kOfxImageEffectPropSupportsTiles, 0, 0);
   gPropHost->propSetInt(props, kOfxImageEffectPropTemporalClipAccess, 0, 0);
+#if defined(_WIN32) && defined(SPEKTRAFILM_ENABLE_CUDA)
+  gPropHost->propSetString(props, kOfxImageEffectPropCudaRenderSupported, 0, "true");
+#endif
   return kOfxStatOK;
 }
 

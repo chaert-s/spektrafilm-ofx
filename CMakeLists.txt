@@ -5,7 +5,7 @@ project(SpektraFilmOFX LANGUAGES CXX)
 if(APPLE)
   enable_language(OBJCXX)
 elseif(NOT WIN32)
-  message(FATAL_ERROR "SpektraFilm OFX currently supports macOS Metal and Windows Vulkan builds.")
+  message(FATAL_ERROR "SpektraFilm OFX currently supports macOS Metal and Windows CUDA builds.")
 endif()
 
 set(SPEKTRAFILM_VERSION "0.2.0")
@@ -24,6 +24,7 @@ endif()
 
 option(SPEKTRAFILM_NATIVE_FAST_MATH "Build native macOS renderer code with -ffast-math. Candidate optimization; validate with parity before release." OFF)
 option(SPEKTRAFILM_METAL_FAST_MATH "Build Metal shaders with -ffast-math. Candidate optimization; validate with parity before release." OFF)
+set(SPEKTRAFILM_CUDA_ARCHITECTURES "native" CACHE STRING "CUDA GPU architectures for SpektraFilm CUDA targets.")
 set(SPEKTRAFILM_METAL_EXTRA_FLAGS "" CACHE STRING "Extra flags passed to the Metal shader compiler.")
 
 if(NOT DEFINED Python3_EXECUTABLE)
@@ -62,28 +63,8 @@ if(NOT SPEKTRAFILM_PYTHON_DEPS_RESULT EQUAL 0)
   )
 endif()
 
-set(_SPEKTRAFILM_VULKAN_SDK "")
-if(WIN32 AND DEFINED ENV{VULKAN_SDK})
-  file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" _SPEKTRAFILM_VULKAN_SDK)
-endif()
-
 if(APPLE)
   find_package(PNG REQUIRED)
-elseif(WIN32)
-  if(_SPEKTRAFILM_VULKAN_SDK)
-    list(PREPEND CMAKE_PREFIX_PATH "${_SPEKTRAFILM_VULKAN_SDK}")
-    set(Vulkan_ROOT "${_SPEKTRAFILM_VULKAN_SDK}" CACHE PATH "Vulkan SDK root")
-
-    if(NOT Vulkan_INCLUDE_DIR AND EXISTS "${_SPEKTRAFILM_VULKAN_SDK}/Include/vulkan/vulkan.h")
-      set(Vulkan_INCLUDE_DIR "${_SPEKTRAFILM_VULKAN_SDK}/Include" CACHE PATH "Vulkan include directory")
-    endif()
-
-    if(NOT Vulkan_LIBRARY AND EXISTS "${_SPEKTRAFILM_VULKAN_SDK}/Lib/vulkan-1.lib")
-      set(Vulkan_LIBRARY "${_SPEKTRAFILM_VULKAN_SDK}/Lib/vulkan-1.lib" CACHE FILEPATH "Vulkan loader import library")
-    endif()
-  endif()
-
-  find_package(Vulkan REQUIRED)
 endif()
 
 set(SPEKTRAFILM_OFX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openfx" CACHE PATH "Vendored or external OpenFX SDK root")
@@ -180,6 +161,7 @@ add_custom_command(
 
 set(SPEKTRAFILM_COMMON_PLUGIN_SOURCES
   src/SpektraFilmPlugin.cpp
+  src/SpektraRenderCore.cpp
   "${SPEKTRAFILM_GENERATED_PROFILE_CURVES}"
   "${SPEKTRAFILM_GENERATED_PROFILE_COUNTS}"
 )
@@ -225,79 +207,27 @@ if(APPLE)
 
   add_custom_target(SpektraFilmMetalLibrary ALL DEPENDS "${SPEKTRAFILM_METALLIB}")
 elseif(WIN32)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  if(TARGET CUDA::cudart_static)
+    set(SPEKTRAFILM_CUDA_RUNTIME_TARGET CUDA::cudart_static)
+  else()
+    set(SPEKTRAFILM_CUDA_RUNTIME_TARGET CUDA::cudart)
+  endif()
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  if(SPEKTRAFILM_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "${SPEKTRAFILM_CUDA_ARCHITECTURES}" CACHE STRING "CUDA GPU architectures" FORCE)
+  elseif(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+    set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA GPU architectures" FORCE)
+  endif()
+
   set(SPEKTRAFILM_PLATFORM_RENDERER_SOURCES
-    src/SpektraVulkanRenderer.cpp
+    src/SpektraNativeRenderer.cpp
+    src/SpektraCudaRenderer.cpp
+    src/SpektraCudaKernels.cu
   )
-
-  set(_SPEKTRAFILM_VULKAN_TOOL_HINTS)
-  if(_SPEKTRAFILM_VULKAN_SDK)
-    list(APPEND _SPEKTRAFILM_VULKAN_TOOL_HINTS "${_SPEKTRAFILM_VULKAN_SDK}/Bin")
-  endif()
-
-  find_program(SPEKTRAFILM_GLSLC_EXECUTABLE
-    NAMES glslc
-    HINTS ${_SPEKTRAFILM_VULKAN_TOOL_HINTS}
-  )
-  find_program(SPEKTRAFILM_GLSLANG_VALIDATOR_EXECUTABLE
-    NAMES glslangValidator
-    HINTS ${_SPEKTRAFILM_VULKAN_TOOL_HINTS}
-  )
-
-  set(SPEKTRAFILM_VULKAN_SHADER_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraCopy.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraFormatConvert.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraFilmExposureStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraCurveDevelopStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraPrintScanStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraHalationStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraDiffusionStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraDirStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraScannerPostStub.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraGrainStub.comp"
-  )
-  set(SPEKTRAFILM_VULKAN_SPV_FILES)
-  set(SPEKTRAFILM_VULKAN_COPY_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraCopy.comp.spv")
-  set(SPEKTRAFILM_VULKAN_FORMAT_CONVERT_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraFormatConvert.comp.spv")
-  set(SPEKTRAFILM_VULKAN_FILM_EXPOSURE_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraFilmExposureStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_CURVE_DEVELOP_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraCurveDevelopStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_PRINT_SCAN_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraPrintScanStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_HALATION_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraHalationStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_DIFFUSION_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraDiffusionStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_DIR_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraDirStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_SCANNER_POST_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraScannerPostStub.comp.spv")
-  set(SPEKTRAFILM_VULKAN_GRAIN_STUB_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraGrainStub.comp.spv")
-  if(NOT SPEKTRAFILM_GLSLC_EXECUTABLE AND NOT SPEKTRAFILM_GLSLANG_VALIDATOR_EXECUTABLE)
-    message(FATAL_ERROR "A Vulkan GLSL compiler is required. Install the Vulkan SDK so glslc or glslangValidator is on PATH.")
-  endif()
-  foreach(vulkan_shader IN LISTS SPEKTRAFILM_VULKAN_SHADER_SOURCES)
-    get_filename_component(vulkan_shader_name "${vulkan_shader}" NAME)
-    set(vulkan_spv "${CMAKE_CURRENT_BINARY_DIR}/vulkan/${vulkan_shader_name}.spv")
-    list(APPEND SPEKTRAFILM_VULKAN_SPV_FILES "${vulkan_spv}")
-    if(SPEKTRAFILM_GLSLC_EXECUTABLE)
-      add_custom_command(
-        OUTPUT "${vulkan_spv}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/vulkan"
-        COMMAND "${SPEKTRAFILM_GLSLC_EXECUTABLE}"
-                -fshader-stage=compute
-                "${vulkan_shader}"
-                -o "${vulkan_spv}"
-        DEPENDS "${vulkan_shader}"
-        VERBATIM
-      )
-    else()
-      add_custom_command(
-        OUTPUT "${vulkan_spv}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/vulkan"
-        COMMAND "${SPEKTRAFILM_GLSLANG_VALIDATOR_EXECUTABLE}"
-                -V
-                "${vulkan_shader}"
-                -o "${vulkan_spv}"
-        DEPENDS "${vulkan_shader}"
-        VERBATIM
-      )
-    endif()
-  endforeach()
-  add_custom_target(SpektraFilmVulkanShaders ALL DEPENDS ${SPEKTRAFILM_VULKAN_SPV_FILES})
 endif()
 
 set(SPEKTRAFILM_PLUGIN_SOURCES
@@ -317,12 +247,17 @@ set(SPEKTRAFILM_OFX_LUT_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/Legal/SPEKTRAFILM_O
 set(SPEKTRAFILM_OFX_THIRD_PARTY_NOTICES "${CMAKE_CURRENT_SOURCE_DIR}/Legal/THIRD_PARTY_NOTICES.txt")
 
 if(WIN32)
-  if(DEFINED ENV{CommonProgramFiles})
+  if(DEFINED ENV{CommonProgramW6432})
+    set(_SPEKTRAFILM_WINDOWS_INSTALL_ROOT "$ENV{CommonProgramW6432}/OFX/Plugins")
+  elseif(DEFINED ENV{CommonProgramFiles})
     set(_SPEKTRAFILM_WINDOWS_INSTALL_ROOT "$ENV{CommonProgramFiles}/OFX/Plugins")
   else()
     set(_SPEKTRAFILM_WINDOWS_INSTALL_ROOT "C:/Program Files/Common Files/OFX/Plugins")
   endif()
   set(SPEKTRAFILM_WINDOWS_OFX_INSTALL_ROOT "${_SPEKTRAFILM_WINDOWS_INSTALL_ROOT}" CACHE PATH "Windows OFX plugin install directory")
+  if(SPEKTRAFILM_WINDOWS_OFX_INSTALL_ROOT MATCHES "Program Files \\(x86\\)")
+    set(SPEKTRAFILM_WINDOWS_OFX_INSTALL_ROOT "${_SPEKTRAFILM_WINDOWS_INSTALL_ROOT}" CACHE PATH "Windows OFX plugin install directory" FORCE)
+  endif()
 endif()
 
 function(apply_spektra_macos_native_options target)
@@ -352,7 +287,7 @@ function(configure_spektra_target target artifact_name display_name plugin_id fl
   if(APPLE)
     set(SPEKTRAFILM_MANIFEST_RENDERER "Metal")
   else()
-    set(SPEKTRAFILM_MANIFEST_RENDERER "Vulkan")
+    set(SPEKTRAFILM_MANIFEST_RENDERER "CUDA")
   endif()
 
   set(plugin_manifest "${CMAKE_CURRENT_BINARY_DIR}/${target}-plugin_manifest.json")
@@ -383,9 +318,14 @@ function(configure_spektra_target target artifact_name display_name plugin_id fl
       _CRT_SECURE_NO_WARNINGS
     )
     target_link_libraries(${target} PRIVATE
-      Vulkan::Vulkan
       shell32
       user32
+      ${SPEKTRAFILM_CUDA_RUNTIME_TARGET}
+    )
+    target_compile_definitions(${target} PRIVATE SPEKTRAFILM_ENABLE_CUDA=1)
+    set_target_properties(${target} PROPERTIES
+      CUDA_SEPARABLE_COMPILATION OFF
+      CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
     set_target_properties(${target} PROPERTIES
       PREFIX ""
@@ -541,7 +481,6 @@ function(add_windows_bundle_resources target artifact_name plugin_manifest plugi
   set(binary_dir "${contents_dir}/Win64")
   set(resources_dir "${contents_dir}/Resources")
   set(bundle_resource_deps
-    ${SPEKTRAFILM_VULKAN_SPV_FILES}
     "${plugin_manifest}"
     "${SPEKTRAFILM_GENERATED_HANATOS_LUT}"
     "${SPEKTRAFILM_USER_MANUAL_PDF}"
@@ -561,84 +500,25 @@ function(add_windows_bundle_resources target artifact_name plugin_manifest plugi
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${binary_dir}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${resources_dir}/Legal"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${resources_dir}/icons"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${resources_dir}/shaders"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:${target}>"
-            "${binary_dir}/${artifact_name}.ofx"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_COPY_SPV}"
-            "${resources_dir}/shaders/SpektraCopy.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_FORMAT_CONVERT_SPV}"
-            "${resources_dir}/shaders/SpektraFormatConvert.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_FILM_EXPOSURE_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraFilmExposureStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_CURVE_DEVELOP_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraCurveDevelopStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_PRINT_SCAN_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraPrintScanStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_HALATION_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraHalationStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_DIFFUSION_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraDiffusionStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_DIR_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraDirStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_SCANNER_POST_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraScannerPostStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_GRAIN_STUB_SPV}"
-            "${resources_dir}/shaders/SpektraGrainStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${plugin_manifest}"
-            "${resources_dir}/plugin_manifest.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_GENERATED_HANATOS_LUT}"
-            "${resources_dir}/SpektraHanatos2025Spectra.f32"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_USER_MANUAL_PDF}"
-            "${resources_dir}/manual.pdf"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_OFX_LICENSE}"
-            "${resources_dir}/Legal/SPEKTRAFILM_OFX_LICENSE.txt"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_OFX_LUT_LICENSE}"
-            "${resources_dir}/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_OFX_THIRD_PARTY_NOTICES}"
-            "${resources_dir}/Legal/THIRD_PARTY_NOTICES.txt"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_flow.svg"
-            "${resources_dir}/icons/spektrafilm_flow.svg"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm.svg"
-            "${resources_dir}/icons/spektrafilm.svg"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_dev.svg"
-            "${resources_dir}/icons/spektrafilm_dev.svg"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_flow.png"
-            "${resources_dir}/icons/spektrafilm_flow.png"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm.png"
-            "${resources_dir}/icons/spektrafilm.png"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_dev.png"
-            "${resources_dir}/icons/spektrafilm_dev.png"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${plugin_icon_source}"
-            "${resources_dir}/${resolve_icon_name}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${resources_dir}/shaders"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${target}>" "${binary_dir}/${artifact_name}.ofx"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${plugin_manifest}" "${resources_dir}/plugin_manifest.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_GENERATED_HANATOS_LUT}" "${resources_dir}/SpektraHanatos2025Spectra.f32"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_USER_MANUAL_PDF}" "${resources_dir}/manual.pdf"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_LICENSE}" "${resources_dir}/Legal/SPEKTRAFILM_OFX_LICENSE.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_LUT_LICENSE}" "${resources_dir}/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_THIRD_PARTY_NOTICES}" "${resources_dir}/Legal/THIRD_PARTY_NOTICES.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_flow.svg" "${resources_dir}/icons/spektrafilm_flow.svg"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm.svg" "${resources_dir}/icons/spektrafilm.svg"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_dev.svg" "${resources_dir}/icons/spektrafilm_dev.svg"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_flow.png" "${resources_dir}/icons/spektrafilm_flow.png"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm.png" "${resources_dir}/icons/spektrafilm.png"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/spektrafilm_dev.png" "${resources_dir}/icons/spektrafilm_dev.png"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${plugin_icon_source}" "${resources_dir}/${resolve_icon_name}"
     VERBATIM
   )
 
-  add_dependencies(${target} SpektraFilmVulkanShaders)
-  add_custom_target(${target}BundleResources ALL DEPENDS ${target} SpektraFilmVulkanShaders ${bundle_resource_deps})
+  add_custom_target(${target}BundleResources ALL DEPENDS ${target} ${bundle_resource_deps})
   install(DIRECTORY "${bundle_root}" DESTINATION "${SPEKTRAFILM_WINDOWS_OFX_INSTALL_ROOT}")
 
   if(package_for_website)
@@ -650,34 +530,13 @@ function(add_windows_bundle_resources target artifact_name plugin_manifest plugi
       COMMAND "${CMAKE_COMMAND}" -E rm -rf "${download_stage}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${download_stage}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${download_stage}/Legal"
-      COMMAND "${CMAKE_COMMAND}" -E copy_directory
-              "${bundle_root}"
-              "${download_stage}/${artifact_name}.ofx.bundle"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${SPEKTRAFILM_OFX_INSTALL_INSTRUCTIONS}"
-              "${download_stage}/install_instructions.txt"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${SPEKTRAFILM_USER_MANUAL_PDF}"
-              "${download_stage}/manual.pdf"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${SPEKTRAFILM_OFX_LICENSE}"
-              "${download_stage}/Legal/SPEKTRAFILM_OFX_LICENSE.txt"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${SPEKTRAFILM_OFX_LUT_LICENSE}"
-              "${download_stage}/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${SPEKTRAFILM_OFX_THIRD_PARTY_NOTICES}"
-              "${download_stage}/Legal/THIRD_PARTY_NOTICES.txt"
-      COMMAND "${CMAKE_COMMAND}" -E chdir
-              "${download_stage}"
-              "${CMAKE_COMMAND}" -E tar
-              cf
-              "${download_zip}"
-              --format=zip
-              "${artifact_name}.ofx.bundle"
-              "install_instructions.txt"
-              "manual.pdf"
-              "Legal"
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory "${bundle_root}" "${download_stage}/${artifact_name}.ofx.bundle"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_INSTALL_INSTRUCTIONS}" "${download_stage}/install_instructions.txt"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_USER_MANUAL_PDF}" "${download_stage}/manual.pdf"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_LICENSE}" "${download_stage}/Legal/SPEKTRAFILM_OFX_LICENSE.txt"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_LUT_LICENSE}" "${download_stage}/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SPEKTRAFILM_OFX_THIRD_PARTY_NOTICES}" "${download_stage}/Legal/THIRD_PARTY_NOTICES.txt"
+      COMMAND "${CMAKE_COMMAND}" -E chdir "${download_stage}" "${CMAKE_COMMAND}" -E tar cf "${download_zip}" --format=zip "${artifact_name}.ofx.bundle" "install_instructions.txt" "manual.pdf" "Legal"
       DEPENDS ${target}BundleResources "${SPEKTRAFILM_OFX_INSTALL_INSTRUCTIONS}" "${SPEKTRAFILM_USER_MANUAL_PDF}"
       VERBATIM
     )
@@ -861,62 +720,34 @@ if(APPLE)
     VERBATIM
   )
 elseif(WIN32)
-  add_executable(SpektraVulkanCopyHarness
-    tools/SpektraVulkanCopyHarness.cpp
-    src/SpektraVulkanRenderer.cpp
+  add_executable(SpektraCudaHarness
+    tools/SpektraCudaHarness.cpp
+    src/SpektraRenderCore.cpp
+    src/SpektraCudaRenderer.cpp
+    src/SpektraCudaKernels.cu
     "${SPEKTRAFILM_GENERATED_PROFILE_CURVES}"
     "${SPEKTRAFILM_GENERATED_PROFILE_COUNTS}"
   )
 
-  target_include_directories(SpektraVulkanCopyHarness PRIVATE
+  target_include_directories(SpektraCudaHarness PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
   )
-
-  target_compile_definitions(SpektraVulkanCopyHarness PRIVATE
+  target_compile_definitions(SpektraCudaHarness PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
     _CRT_SECURE_NO_WARNINGS
+    SPEKTRAFILM_ENABLE_CUDA=1
   )
-
-  target_link_libraries(SpektraVulkanCopyHarness PRIVATE Vulkan::Vulkan)
-  add_dependencies(SpektraVulkanCopyHarness SpektraFilmVulkanShaders)
-
-  add_custom_command(TARGET SpektraVulkanCopyHarness POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_COPY_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraCopy.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_FORMAT_CONVERT_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraFormatConvert.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_FILM_EXPOSURE_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraFilmExposureStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_CURVE_DEVELOP_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraCurveDevelopStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_PRINT_SCAN_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraPrintScanStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_HALATION_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraHalationStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_DIFFUSION_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraDiffusionStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_DIR_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraDirStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_SCANNER_POST_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraScannerPostStub.comp.spv"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${SPEKTRAFILM_VULKAN_GRAIN_STUB_SPV}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraGrainStub.comp.spv"
+  target_link_libraries(SpektraCudaHarness PRIVATE ${SPEKTRAFILM_CUDA_RUNTIME_TARGET})
+  set_target_properties(SpektraCudaHarness PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+  )
+  add_custom_command(TARGET SpektraCudaHarness POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SPEKTRAFILM_GENERATED_HANATOS_LUT}"
-            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/SpektraHanatos2025Spectra.f32"
+            "$<TARGET_FILE_DIR:SpektraCudaHarness>/SpektraHanatos2025Spectra.f32"
     VERBATIM
   )
 endif()
