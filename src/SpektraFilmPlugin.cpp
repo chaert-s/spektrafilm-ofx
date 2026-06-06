@@ -2789,6 +2789,12 @@ const char *colorSpaceName(spektrafilm::ColorSpace colorSpace) {
       return "Canon Log3 CinemaGamut D55";
     case spektrafilm::ColorSpace::PanasonicVLogVGamut:
       return "Panasonic V-Log V-Gamut";
+    case spektrafilm::ColorSpace::FujiFLogFGamut:
+      return "Fujifilm F-Log F-Gamut";
+    case spektrafilm::ColorSpace::FujiFLog2FGamut:
+      return "Fujifilm F-Log2 F-Gamut";
+    case spektrafilm::ColorSpace::FujiFLog2CFGamutC:
+      return "Fujifilm F-Log2C F-Gamut C";
     case spektrafilm::ColorSpace::Aces2065_1:
       return "ACES2065-1";
     case spektrafilm::ColorSpace::AcesCg:
@@ -4915,6 +4921,9 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle) {
     "Canon Log2 CinemaGamut D55",
     "Canon Log3 CinemaGamut D55",
     "Panasonic V-Log V-Gamut",
+    "Fujifilm F-Log F-Gamut",
+    "Fujifilm F-Log2 F-Gamut",
+    "Fujifilm F-Log2C F-Gamut C",
     "ACES2065-1",
     "ACEScg",
     "ACEScct",
@@ -4930,7 +4939,10 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle) {
     "P3-D65 Gamma 2.2",
     "P3-D65 Gamma 2.6",
     "Rec.709 Gamma 2.2",
-    "Rec.709 Gamma 2.4"
+    "Rec.709 Gamma 2.4",
+    "Fujifilm F-Log F-Gamut",
+    "Fujifilm F-Log2 F-Gamut",
+    "Fujifilm F-Log2C F-Gamut C"
   };
   const char *rcmInputColorSpaces[] = {
     "DaVinci Intermediate WideGamut",

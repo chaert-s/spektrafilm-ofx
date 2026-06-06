@@ -383,6 +383,33 @@ COLOR_SPACES = [
         "decode": lambda x: np.sign(x) * (np.abs(x) ** 2.4),
         "encode": lambda x: np.sign(x) * (np.abs(x) ** (1.0 / 2.4)),
     },
+    {
+        "key": "flog_fgamut",
+        "label": "Fujifilm F-Log F-Gamut",
+        "matrix_space": "F-Gamut",
+        "ofx": "flog_fgamut",
+        "transfer": TRANSFER_LUT,
+        "decode": lambda x: colour.models.log_decoding_FLog(x),
+        "encode": lambda x: colour.models.log_encoding_FLog(x),
+    },
+    {
+        "key": "flog2_fgamut",
+        "label": "Fujifilm F-Log2 F-Gamut",
+        "matrix_space": "F-Gamut",
+        "ofx": "flog2_fgamut",
+        "transfer": TRANSFER_LUT,
+        "decode": lambda x: colour.models.log_decoding_FLog2(x),
+        "encode": lambda x: colour.models.log_encoding_FLog2(x),
+    },
+    {
+        "key": "flog2c_fgamut_c",
+        "label": "Fujifilm F-Log2C F-Gamut C",
+        "matrix_space": "F-Gamut C",
+        "ofx": "flog2c_fgamut_c",
+        "transfer": TRANSFER_LUT,
+        "decode": lambda x: colour.models.log_decoding_FLog2(x),
+        "encode": lambda x: colour.models.log_encoding_FLog2(x),
+    },
 ]
 
 
