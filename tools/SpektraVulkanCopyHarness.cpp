@@ -1480,7 +1480,7 @@ bool runSharedBackendCase(const Options &options) {
   std::vector<std::unique_ptr<spektrafilm::Renderer>> renderers;
   renderers.reserve(static_cast<size_t>(instanceCount));
   for (int i = 0; i < instanceCount; ++i) {
-    std::unique_ptr<spektrafilm::Renderer> renderer = spektrafilm::createNativeRenderer();
+    std::unique_ptr<spektrafilm::Renderer> renderer = spektrafilm::createVulkanRenderer();
     if (!renderer || !renderer->isAvailable()) {
       std::cerr << "Shared backend renderer " << i << " is not available";
       if (renderer && !renderer->lastError().empty()) {
@@ -1639,7 +1639,7 @@ int main(int argc, char **argv) {
     return runSharedBackendCase(options) ? 0 : 1;
   }
 
-  std::unique_ptr<spektrafilm::Renderer> renderer = spektrafilm::createNativeRenderer();
+  std::unique_ptr<spektrafilm::Renderer> renderer = spektrafilm::createVulkanRenderer();
   if (!renderer || !renderer->isAvailable()) {
     std::cerr << "Vulkan renderer is not available";
     if (renderer && !renderer->lastError().empty()) {

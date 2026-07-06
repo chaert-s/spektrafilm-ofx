@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "SpektraParameters.h"
@@ -10,6 +11,29 @@
 namespace spektrafilm {
 
 struct RendererPassDiagnostics {
+  RendererPassDiagnostics() = default;
+
+  RendererPassDiagnostics(
+    std::string passName,
+    double passGpuMs,
+    uint32_t passWidth,
+    uint32_t passHeight,
+    uint32_t passDepth,
+    uint32_t passThreadgroupWidth,
+    uint32_t passThreadgroupHeight,
+    uint64_t passEstimatedBytes,
+    bool passGpuTimeAvailable
+  )
+    : name(std::move(passName))
+    , gpuMs(passGpuMs)
+    , width(passWidth)
+    , height(passHeight)
+    , depth(passDepth)
+    , threadgroupWidth(passThreadgroupWidth)
+    , threadgroupHeight(passThreadgroupHeight)
+    , estimatedBytes(passEstimatedBytes)
+    , gpuTimeAvailable(passGpuTimeAvailable) {}
+
   std::string name;
   double gpuMs = 0.0;
   uint32_t width = 0;
@@ -40,16 +64,23 @@ struct RendererTileDiagnostics {
 };
 
 struct RendererDiagnostics {
+  std::string backendName;
+  std::string backendFallbackReason;
   double cpuSetupMs = 0.0;
   double sourceCopyMs = 0.0;
   double commandEncodingMs = 0.0;
   double commandBufferMs = 0.0;
   double gpuCommandBufferMs = 0.0;
   double outputCopyMs = 0.0;
+  double cudaHostToDeviceMs = 0.0;
+  double cudaDeviceToHostMs = 0.0;
+  double cudaKernelMs = 0.0;
   uint64_t staticAllocationBytes = 0;
   uint64_t staticAllocationCount = 0;
   uint64_t scratchAllocationBytes = 0;
   uint64_t scratchAllocationCount = 0;
+  uint64_t cudaPinnedStagingBytes = 0;
+  uint64_t cudaDeviceScratchBytes = 0;
   uint64_t sharedScratchAllocationBytes = 0;
   uint64_t sharedScratchAllocationCount = 0;
   uint64_t privateScratchAllocationBytes = 0;
@@ -69,6 +100,8 @@ struct RendererDiagnostics {
   bool passStageCounterSamplingSupported = false;
   bool sourceNoCopy = false;
   bool destinationNoCopy = false;
+  bool cudaMappedHostMemory = false;
+  bool cudaGraphEnabled = false;
   bool passGpuTimingEnabled = false;
   bool passGpuTimingAvailable = false;
   bool privateScratchEnabled = false;
@@ -90,6 +123,10 @@ struct RendererDiagnostics {
   uint32_t tileHeight = 0;
   uint32_t tileOverlap = 0;
   uint32_t diffusionGroupSize = 2;
+  std::string deviceName;
+  std::string cudaTransferMode;
+  int cudaComputeCapabilityMajor = 0;
+  int cudaComputeCapabilityMinor = 0;
   std::string threadgroupMode = "auto";
   std::string passTimingMode;
   std::string blurBackend = "custom";

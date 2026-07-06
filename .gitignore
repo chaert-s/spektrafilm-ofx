@@ -81,3 +81,5 @@ Resources/data/standards/smpte_st_2065_2/st2065-2b-2020.csv
 SpektraFilmPerfHarness
 SpektraFilmEvaluationHarness
 SpektraVariantGenerator
+*.ninja
+/Ninja

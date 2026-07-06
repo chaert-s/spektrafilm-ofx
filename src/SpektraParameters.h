@@ -122,12 +122,17 @@ enum class ColorSpace : int32_t {
   Rec709Gamma24 = 25,
 };
 
+enum class ImageMemoryDomain : int32_t {
+  Host = 0,
+  CudaDevice = 1,
+};
+
 struct RenderParams {
   ProcessMode process = ProcessMode::PrintSimulation;
   bool scanNegativeInvert = false;
   RenderOutputMode renderOutput = RenderOutputMode::FinalPreview;
   RgbToRawMethod rgbToRawMethod = RgbToRawMethod::Hanatos2026;
-  ColorSpace inputColorSpace = ColorSpace::ArriLogC4;
+  ColorSpace inputColorSpace = ColorSpace::DavinciIntermediateWideGamut;
   ColorSpace outputColorSpace = ColorSpace::Rec709Gamma24;
   OutputRole outputRole = OutputRole::DisplaySdr;
   HdrPreset hdrPreset = HdrPreset::Pq1000;
@@ -324,6 +329,7 @@ struct ImageView {
   int32_t rowBytes = 0;
   int32_t components = 4;
   int32_t bytesPerComponent = 4;
+  ImageMemoryDomain memoryDomain = ImageMemoryDomain::Host;
 };
 
 struct MutableImageView {
@@ -335,6 +341,7 @@ struct MutableImageView {
   int32_t rowBytes = 0;
   int32_t components = 4;
   int32_t bytesPerComponent = 4;
+  ImageMemoryDomain memoryDomain = ImageMemoryDomain::Host;
 };
 
 struct RenderWindow {

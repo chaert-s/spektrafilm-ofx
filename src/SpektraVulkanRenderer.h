@@ -38,4 +38,6 @@ private:
   std::string lastRenderError_;
 };
 
+std::unique_ptr<Renderer> createVulkanRenderer();
+
 } // namespace spektrafilm

@@ -7852,8 +7852,14 @@ bool VulkanRenderer::render(
   return false;
 }
 
-std::unique_ptr<Renderer> createNativeRenderer() {
+std::unique_ptr<Renderer> createVulkanRenderer() {
   return std::make_unique<VulkanRenderer>();
 }
+
+#if !defined(_WIN32)
+std::unique_ptr<Renderer> createNativeRenderer() {
+  return createVulkanRenderer();
+}
+#endif
 
 } // namespace spektrafilm

@@ -1,0 +1,342 @@
+name: Release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to create the draft release for, for example v1.0.0"
+        required: true
+        type: string
+      release_name:
+        description: "Release title. Defaults to the tag name."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-builds-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CMAKE_BUILD_TYPE: Release
+  CUDA_VERSION: "12.9.1"
+  CUDA_ARCHITECTURES: "61;75;86;89;90"
+  VULKAN_SDK_VERSION: "1.4.350.0"
+  PYTHON_PACKAGES: "numpy scipy colour-science"
+
+jobs:
+  macos-universal:
+    name: macOS universal OFX
+    runs-on: macos-15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          brew install cmake libpng ninja
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ${PYTHON_PACKAGES}
+          xcrun -sdk macosx metal -v
+
+      - name: Configure universal build
+        run: |
+          cmake -S . -B build/release-macos -G Ninja \
+            -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
+
+      - name: Build public bundles
+        run: |
+          cmake --build build/release-macos \
+            --target spektrafilmBundleResources spektrafilm_flowBundleResources \
+            --parallel
+
+      - name: Verify universal binaries
+        run: |
+          for artifact in spektrafilm spektrafilm_flow; do
+            binary="build/release-macos/${artifact}.ofx.bundle/Contents/MacOS/${artifact}.ofx"
+            test -f "${binary}"
+            lipo -archs "${binary}" | grep -q "arm64"
+            lipo -archs "${binary}" | grep -q "x86_64"
+          done
+
+      - name: Package macOS archive
+        run: |
+          rm -rf dist/macos-stage dist/SpektraFilm-OFX-macOS-universal.zip
+          mkdir -p dist/macos-stage/Legal
+
+          for artifact in spektrafilm spektrafilm_flow; do
+            COPYFILE_DISABLE=1 ditto --norsrc \
+              "build/release-macos/${artifact}.ofx.bundle" \
+              "dist/macos-stage/${artifact}.ofx.bundle"
+          done
+
+          if [[ -f ../../docs/user_manual/main.pdf ]]; then
+            manual="../../docs/user_manual/main.pdf"
+          else
+            manual="documentation/spektrafilm_reference_guide.pdf"
+          fi
+
+          COPYFILE_DISABLE=1 ditto --norsrc install_instructions.txt dist/macos-stage/install_instructions.txt
+          COPYFILE_DISABLE=1 ditto --norsrc "${manual}" dist/macos-stage/manual.pdf
+          COPYFILE_DISABLE=1 ditto --norsrc Legal/SPEKTRAFILM_OFX_LICENSE.txt dist/macos-stage/Legal/SPEKTRAFILM_OFX_LICENSE.txt
+          COPYFILE_DISABLE=1 ditto --norsrc Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt dist/macos-stage/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt
+          COPYFILE_DISABLE=1 ditto --norsrc Legal/THIRD_PARTY_NOTICES.txt dist/macos-stage/Legal/THIRD_PARTY_NOTICES.txt
+          printf 'Unsigned universal CI build. Sign and notarize before public macOS distribution if Gatekeeper approval is required.\n' \
+            > dist/macos-stage/macos_unsigned_build_note.txt
+
+          COPYFILE_DISABLE=1 ditto -c -k --norsrc \
+            dist/macos-stage \
+            dist/SpektraFilm-OFX-macOS-universal.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: spektrafilm-macos-universal
+          path: dist/SpektraFilm-OFX-macOS-universal.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows OFX
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "VulkanSDK-$env:VULKAN_SDK_VERSION-Installer.exe"
+          $sdkRoot = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanSDK-$env:VULKAN_SDK_VERSION-Installer.exe"
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList @(
+            "--root", $sdkRoot,
+            "--accept-licenses",
+            "--default-answer",
+            "--confirm-command", "install"
+          ) -NoNewWindow -Wait
+
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$sdkRoot\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install build tools and Python packages
+        shell: pwsh
+        run: |
+          choco install ninja -y --no-progress
+          python -m pip install --upgrade pip
+          python -m pip install @($env:PYTHON_PACKAGES -split " ")
+
+      - name: Configure and build public bundles
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsRoot) {
+            throw "Could not find a Visual Studio installation with the C++ toolchain."
+          }
+
+          $vsDevCmd = Join-Path $vsRoot "Common7\Tools\VsDevCmd.bat"
+          $cmdPath = Join-Path $env:RUNNER_TEMP "spektrafilm-windows-build.cmd"
+          @"
+          call "$vsDevCmd" -arch=x64 -host_arch=x64
+          cmake -S "$env:GITHUB_WORKSPACE" -B "$env:GITHUB_WORKSPACE\build\release-windows" -G Ninja -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DSPEKTRAFILM_CUDA_ARCHITECTURES="$env:CUDA_ARCHITECTURES"
+          cmake --build "$env:GITHUB_WORKSPACE\build\release-windows" --target spektrafilmBundleResources spektrafilm_flowBundleResources --parallel
+          "@ | Set-Content -Path $cmdPath -Encoding ASCII
+
+          & $env:ComSpec /c $cmdPath
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Package Windows archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "dist\windows-stage"
+          $zip = "dist\SpektraFilm-OFX-Windows.zip"
+
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage, "$stage\Legal" | Out-Null
+
+          foreach ($artifact in @("spektrafilm", "spektrafilm_flow")) {
+            $bundle = "build\release-windows\$artifact.ofx.bundle"
+            $ofx = "$bundle\Contents\Win64\$artifact.ofx"
+            if (-not (Test-Path $ofx)) {
+              throw "Missing built OFX binary: $ofx"
+            }
+            Copy-Item -LiteralPath $bundle -Destination "$stage\$artifact.ofx.bundle" -Recurse -Force
+          }
+
+          if (Test-Path "build\release-windows\spektrafilm_dev.ofx.bundle") {
+            throw "dev bundle must not be included in the public release ZIP."
+          }
+
+          if (Test-Path "..\..\docs\user_manual\main.pdf") {
+            $manual = "..\..\docs\user_manual\main.pdf"
+          } else {
+            $manual = "documentation\spektrafilm_reference_guide.pdf"
+          }
+
+          Copy-Item -LiteralPath "tools\windows_install\install.bat" -Destination "$stage\install.bat" -Force
+          Copy-Item -LiteralPath "install_instructions.txt" -Destination "$stage\install_instructions.txt" -Force
+          Copy-Item -LiteralPath $manual -Destination "$stage\manual.pdf" -Force
+          Copy-Item -LiteralPath "Legal\SPEKTRAFILM_OFX_LICENSE.txt" -Destination "$stage\Legal\SPEKTRAFILM_OFX_LICENSE.txt" -Force
+          Copy-Item -LiteralPath "Legal\SPEKTRAFILM_OFX_LUT_LICENSE.txt" -Destination "$stage\Legal\SPEKTRAFILM_OFX_LUT_LICENSE.txt" -Force
+          Copy-Item -LiteralPath "Legal\THIRD_PARTY_NOTICES.txt" -Destination "$stage\Legal\THIRD_PARTY_NOTICES.txt" -Force
+
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: spektrafilm-windows
+          path: dist/SpektraFilm-OFX-Windows.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux x86_64 OFX
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            glslang-tools \
+            libvulkan-dev \
+            ninja-build \
+            python3-venv
+
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install ${PYTHON_PACKAGES}
+
+      - name: Configure build
+        run: |
+          . .venv/bin/activate
+          cmake -S . -B build/release-linux -G Ninja \
+            -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+
+      - name: Build public bundles
+        run: |
+          . .venv/bin/activate
+          cmake --build build/release-linux \
+            --target spektrafilmBundleResources spektrafilm_flowBundleResources \
+            --parallel
+
+      - name: Package Linux archive
+        run: |
+          rm -rf dist/linux-stage dist/SpektraFilm-OFX-Linux-x86_64.tar.gz
+          mkdir -p dist/linux-stage/Legal
+
+          for artifact in spektrafilm spektrafilm_flow; do
+            bundle="build/release-linux/${artifact}.ofx.bundle"
+            ofx="${bundle}/Contents/Linux-x86-64/${artifact}.ofx"
+            test -f "${ofx}"
+            cp -a "${bundle}" "dist/linux-stage/${artifact}.ofx.bundle"
+          done
+
+          if [[ -d build/release-linux/spektrafilm_dev.ofx.bundle ]]; then
+            echo "dev bundle must not be included in the public release archive." >&2
+            exit 1
+          fi
+
+          if [[ -f ../../docs/user_manual/main.pdf ]]; then
+            manual="../../docs/user_manual/main.pdf"
+          else
+            manual="documentation/spektrafilm_reference_guide.pdf"
+          fi
+
+          cp install_instructions.txt dist/linux-stage/install_instructions.txt
+          cp "${manual}" dist/linux-stage/manual.pdf
+          cp Legal/SPEKTRAFILM_OFX_LICENSE.txt dist/linux-stage/Legal/SPEKTRAFILM_OFX_LICENSE.txt
+          cp Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt dist/linux-stage/Legal/SPEKTRAFILM_OFX_LUT_LICENSE.txt
+          cp Legal/THIRD_PARTY_NOTICES.txt dist/linux-stage/Legal/THIRD_PARTY_NOTICES.txt
+
+          tar -czf dist/SpektraFilm-OFX-Linux-x86_64.tar.gz -C dist/linux-stage .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: spektrafilm-linux-x86_64
+          path: dist/SpektraFilm-OFX-Linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  draft-release:
+    name: Create draft release
+    runs-on: ubuntu-24.04
+    needs:
+      - macos-universal
+      - windows
+      - linux
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG_NAME}"
+            title="${INPUT_RELEASE_NAME:-${INPUT_TAG_NAME}}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            title="${GITHUB_REF_NAME}"
+          fi
+
+          cat > release-notes.md <<EOF
+          Automated draft release built from ${GITHUB_SHA}.
+
+          Artifacts:
+          - SpektraFilm-OFX-macOS-universal.zip
+          - SpektraFilm-OFX-Windows.zip
+          - SpektraFilm-OFX-Linux-x86_64.tar.gz
+
+          The macOS archive is an unsigned universal CI build unless signing and notarization are added separately.
+          EOF
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release edit "${tag}" --draft=true --title "${title}" --notes-file release-notes.md
+            gh release upload "${tag}" release-assets/* --clobber
+          else
+            gh release create "${tag}" release-assets/* \
+              --draft \
+              --title "${title}" \
+              --notes-file release-notes.md \
+              --target "${GITHUB_SHA}"
+          fi
