@@ -8,7 +8,7 @@
 
 namespace spektrafilm {
 
-constexpr uint32_t kSpektraColorSpaceCount = 26u;
+constexpr uint32_t kSpektraColorSpaceCount = 29u;
 constexpr uint32_t kSpektraColorTransferLutSize = 4096u;
 constexpr uint32_t kSpektraOutputGamutCompressionStride = 18u;
 constexpr uint32_t kSpektraOutputGamutCompressionElementCount =

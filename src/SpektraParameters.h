@@ -120,6 +120,9 @@ enum class ColorSpace : int32_t {
   P3D65Gamma26 = 23,
   Rec709Gamma22 = 24,
   Rec709Gamma24 = 25,
+  FujiFLogFGamut = 26,
+  FujiFLog2FGamut = 27,
+  FujiFLog2CFGamutC = 28,
 };
 
 struct RenderParams {
