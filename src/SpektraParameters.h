@@ -222,6 +222,17 @@ struct RenderParams {
   float grainMicroStructureSigmaNm = 30.0f;
   uint32_t grainSeed = 1;
   bool grainAnimate = false;
+  // Developer streaks (see SpektraDevStreakField.h)
+  bool devStreakEnabled = false;
+  float devStreakStrength = 0.5f;       // 0..1 slider (see devstreak::strengthCurve)
+  uint32_t devStreakSeed = 1;
+  bool devStreakAnimate = true;
+  float devStreakAmount = 1.0f;
+  float devStreakWidth = 1.0f;
+  float devStreakLength = 1.0f;
+  float devStreakFlicker = 1.0f;
+  float devStreakColor = 1.0f;
+  float devStreakHold = 1.0f;
   float grainSynthesisSize = 1.0f;
   float grainSynthesisAmount = 1.0f;
   float grainSynthesisSharpness = 1.0f;

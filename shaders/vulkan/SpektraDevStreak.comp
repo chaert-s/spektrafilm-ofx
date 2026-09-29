@@ -1,0 +1,141 @@
+#version 450
+// SpektraDevStreak.comp — developer streaks (calibrated against measured reference renders)
+//
+// Dispatch: once per frame, AFTER halation / camera diffusion have produced the
+// film log-exposure buffer and BEFORE SpektraCurveDevelop. Operates in place on
+// that buffer, so CurveDevelop, DIR re-development (kDirOpRedevelop reads the same
+// log buffer) and grain (which runs on the developed density) all inherit it.
+//
+// Model: the host generates a 64x36 frame-relative grid of exposure offsets in
+// stops (SpektraDevStreakField.h). Here it is upsampled with Catmull-Rom and
+//   logRaw += stops * log10(2) * toeWeight(logRaw)
+// toeWeight reproduces the stronger streaking observed in the negative toe.
+
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, binding = 0) buffer FilmLogRawPixels {
+  vec4 filmLogRaw[];   // rgb = log10 exposure (same buffer CurveDevelop binds at 0)
+};
+
+// Header (16 floats) followed by gridX*gridY*3 floats (row-major, RGB interleaved).
+layout(std430, binding = 1) readonly buffer StreakData {
+  float streak[];
+};
+const uint kHdrGridX = 0u;
+const uint kHdrGridY = 1u;
+const uint kHdrEnlargerScale = 2u;
+const uint kHdrEnlargerOffsetXPercent = 3u;
+const uint kHdrEnlargerOffsetYPercent = 4u;
+const uint kHdrToeA = 5u;        // 2.22
+const uint kHdrToeS0 = 6u;       // -3.73 stops from mid grey
+const uint kHdrToeW = 7u;        // 0.47 stops
+const uint kHdrLogMidGrey = 8u;  // log10(0.184) = -0.7352
+const uint kHdrSize = 16u;
+
+// Must match the CoreParams push-constant block used by SpektraCurveDevelop.comp
+// (shared corePipelineLayout). Copy it verbatim from that file if it changes.
+layout(push_constant) uniform CoreParams {
+  uint width;
+  uint height;
+  float filmExposureEv;
+  float filmGamma;
+  uint exposureCount;
+  int inputColorSpace;
+  int rgbToRawMethod;
+  uint colorSpaceCount;
+  uint transferLutSize;
+  float colorDecodeMin;
+  float colorDecodeMax;
+  uint hanatosWidth;
+  uint hanatosHeight;
+  uint _pad0;
+  uint _pad1;
+  uint _pad2;
+  int filmPushPullMode;
+  float filmPushPullStops;
+  uint fullWidth;
+  uint fullHeight;
+  uint tileOriginX;
+  uint tileOriginY;
+  uint activeOriginX;
+  uint activeOriginY;
+  uint activeWidth;
+  uint activeHeight;
+} params;
+
+const float kLog10Of2 = 0.30102999566;
+
+vec3 gridTexel(int x, int y) {
+  const int gx = int(streak[kHdrGridX]);
+  const int gy = int(streak[kHdrGridY]);
+  x = clamp(x, 0, gx - 1);
+  y = clamp(y, 0, gy - 1);
+  const uint base = kHdrSize + uint(y * gx + x) * 3u;
+  return vec3(streak[base], streak[base + 1u], streak[base + 2u]);
+}
+
+vec4 catmullRomWeights(float t) {
+  const float t2 = t * t;
+  const float t3 = t2 * t;
+  return vec4(
+    -0.5 * t3 + t2 - 0.5 * t,
+     1.5 * t3 - 2.5 * t2 + 1.0,
+    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+     0.5 * t3 - 0.5 * t2);
+}
+
+// uv in [0,1] over the full (un-enlarged) film frame. Grid sample i sits at uv = i / gridX.
+vec3 sampleStreakStops(vec2 uv) {
+  const vec2 g = uv * vec2(streak[kHdrGridX], streak[kHdrGridY]);
+  const vec2 i0 = floor(g);
+  const vec2 t = g - i0;
+  const vec4 wx = catmullRomWeights(t.x);
+  const vec4 wy = catmullRomWeights(t.y);
+  vec3 acc = vec3(0.0);
+  for (int j = 0; j < 4; ++j) {
+    vec3 row = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+      row += wx[i] * gridTexel(int(i0.x) - 1 + i, int(i0.y) - 1 + j);
+    }
+    acc += wy[j] * row;
+  }
+  return acc;
+}
+
+// Same film-attached mapping as the grain shader (enlarger crop/zoom keeps streaks on the film).
+vec2 filmUv(uvec2 gid) {
+  const vec2 dims = vec2(max(params.fullWidth, max(params.width, 1u)), max(params.fullHeight, max(params.height, 1u)));
+  const vec2 absPx = vec2(gid + uvec2(params.tileOriginX, params.tileOriginY)) + vec2(0.5);
+  const float scale = max(streak[kHdrEnlargerScale], 1.0);
+  const vec2 outputUv = absPx / dims;
+  return vec2(0.5) + (outputUv - vec2(0.5)) / scale +
+    vec2(streak[kHdrEnlargerOffsetXPercent], streak[kHdrEnlargerOffsetYPercent]) * (0.01 / scale);
+}
+
+// One weight for all three layers (from the mean log exposure) so the toe boost can
+// never tint the image: a static shadow/highlight colour bias is a global grade, not a
+// streak property, and is deliberately NOT reproduced. Colour in the streaks
+// comes only from the partially decorrelated per-layer fields in the grid.
+float toeWeight(vec3 logRaw) {
+  const float meanLogRaw = (logRaw.r + logRaw.g + logRaw.b) / 3.0;
+  const float stopsFromMid = (max(meanLogRaw, -6.0) - streak[kHdrLogMidGrey]) / kLog10Of2;
+  return 1.0 + streak[kHdrToeA] / (1.0 + exp((stopsFromMid - streak[kHdrToeS0]) / streak[kHdrToeW]));
+}
+
+void main() {
+  const uvec2 activeGid = gl_GlobalInvocationID.xy;
+  const uint activeWidth = params.activeWidth == 0u ? params.width : params.activeWidth;
+  const uint activeHeight = params.activeHeight == 0u ? params.height : params.activeHeight;
+  if (activeGid.x >= activeWidth || activeGid.y >= activeHeight) {
+    return;
+  }
+  const uvec2 gid = activeGid + uvec2(params.activeOriginX, params.activeOriginY);
+  if (gid.x >= params.width || gid.y >= params.height) {
+    return;
+  }
+  const uint index = gid.y * params.width + gid.x;
+  vec4 px = filmLogRaw[index];
+  const vec3 stops = sampleStreakStops(filmUv(gid));
+  px.rgb += stops * kLog10Of2 * toeWeight(px.rgb);
+  filmLogRaw[index] = px;
+}

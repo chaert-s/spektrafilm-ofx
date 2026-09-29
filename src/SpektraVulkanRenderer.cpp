@@ -1,4 +1,5 @@
 #include "SpektraVulkanRenderer.h"
+#include "SpektraDevStreakField.h"
 #include "SpektraProfileCurves.h"
 
 #include <vulkan/vulkan.h>
@@ -22,6 +23,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -1321,7 +1323,7 @@ constexpr uint32_t kCoreScannerPostSetCount = 9u;
 constexpr uint32_t kCoreGrainSetCount = 5u;
 constexpr uint32_t kCoreDescriptorSetCount =
   3u + kCoreHalationSetCount + kCoreDiffusionSetCount + kCorePrintDiffusionSetCount + kCoreDirSetCount +
-  kCoreScannerPostSetCount + kCoreGrainSetCount;
+  kCoreScannerPostSetCount + kCoreGrainSetCount + 1u /* developer streaks */;
 constexpr uint32_t kMaxVulkanDiffusionComponents = 32u;
 constexpr uint32_t kDirFloatCount = 18u;
 enum : uint32_t {
@@ -1473,6 +1475,7 @@ struct VulkanSharedBackend {
   VkShaderModule dirShaderModule = VK_NULL_HANDLE;
   VkShaderModule scannerPostShaderModule = VK_NULL_HANDLE;
   VkShaderModule grainShaderModule = VK_NULL_HANDLE;
+  VkShaderModule devStreakShaderModule = VK_NULL_HANDLE;
   VkDescriptorSetLayout coreDescriptorSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout corePipelineLayout = VK_NULL_HANDLE;
   VkPipeline filmExposurePipeline = VK_NULL_HANDLE;
@@ -1483,6 +1486,7 @@ struct VulkanSharedBackend {
   VkPipeline dirPipeline = VK_NULL_HANDLE;
   VkPipeline scannerPostPipeline = VK_NULL_HANDLE;
   VkPipeline grainPipeline = VK_NULL_HANDLE;
+  VkPipeline devStreakPipeline = VK_NULL_HANDLE;
   uint64_t transientBudgetBytes = 0;
 
   explicit VulkanSharedBackend(uint32_t backendGeneration) : generation(backendGeneration) {
@@ -1789,7 +1793,8 @@ private:
         !loadShaderModule("shaders/SpektraDiffusion.comp.spv", diffusionShaderModule) ||
         !loadShaderModule("shaders/SpektraDir.comp.spv", dirShaderModule) ||
         !loadShaderModule("shaders/SpektraScannerPost.comp.spv", scannerPostShaderModule) ||
-        !loadShaderModule("shaders/SpektraGrain.comp.spv", grainShaderModule)) {
+        !loadShaderModule("shaders/SpektraGrain.comp.spv", grainShaderModule) ||
+        !loadShaderModule("shaders/SpektraDevStreak.comp.spv", devStreakShaderModule)) {
       return false;
     }
 
@@ -1835,7 +1840,8 @@ private:
            createComputePipeline(diffusionShaderModule, corePipelineLayout, diffusionPipeline) &&
            createComputePipeline(dirShaderModule, corePipelineLayout, dirPipeline) &&
            createComputePipeline(scannerPostShaderModule, corePipelineLayout, scannerPostPipeline) &&
-           createComputePipeline(grainShaderModule, corePipelineLayout, grainPipeline);
+           createComputePipeline(grainShaderModule, corePipelineLayout, grainPipeline) &&
+           createComputePipeline(devStreakShaderModule, corePipelineLayout, devStreakPipeline);
   }
 
   uint64_t computeTransientBudgetBytes() const {
@@ -1865,6 +1871,10 @@ private:
     if (device != VK_NULL_HANDLE) {
       if (!poisoned.load()) {
         vkDeviceWaitIdle(device);
+      }
+      if (devStreakPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, devStreakPipeline, nullptr);
+        devStreakPipeline = VK_NULL_HANDLE;
       }
       if (grainPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, grainPipeline, nullptr);
@@ -1897,6 +1907,10 @@ private:
       if (filmExposurePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, filmExposurePipeline, nullptr);
         filmExposurePipeline = VK_NULL_HANDLE;
+      }
+      if (devStreakShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device, devStreakShaderModule, nullptr);
+        devStreakShaderModule = VK_NULL_HANDLE;
       }
       if (grainShaderModule != VK_NULL_HANDLE) {
         vkDestroyShaderModule(device, grainShaderModule, nullptr);
@@ -2702,6 +2716,7 @@ struct VulkanRenderer::Impl {
     ScratchBuffer grainLayerB;
     ScratchBuffer frameFloats;
     ScratchBuffer frameInts;
+    ScratchBuffer devStreakData;
     ScratchBuffer filteredEnlargerResponse;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet exposureDescriptorSet = VK_NULL_HANDLE;
@@ -2713,6 +2728,7 @@ struct VulkanRenderer::Impl {
     std::array<VkDescriptorSet, kCoreDirSetCount> dirDescriptorSets{};
     std::array<VkDescriptorSet, kCoreScannerPostSetCount> scannerPostDescriptorSets{};
     std::array<VkDescriptorSet, kCoreGrainSetCount> grainDescriptorSets{};
+    VkDescriptorSet devStreakDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool formatDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet destinationFormatDescriptorSet = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -2835,6 +2851,7 @@ struct VulkanRenderer::Impl {
   VkShaderModule dirShaderModule = VK_NULL_HANDLE;
   VkShaderModule scannerPostShaderModule = VK_NULL_HANDLE;
   VkShaderModule grainShaderModule = VK_NULL_HANDLE;
+  VkShaderModule devStreakShaderModule = VK_NULL_HANDLE;
   VkDescriptorSetLayout coreDescriptorSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout corePipelineLayout = VK_NULL_HANDLE;
   VkPipeline filmExposurePipeline = VK_NULL_HANDLE;
@@ -2845,6 +2862,7 @@ struct VulkanRenderer::Impl {
   VkPipeline dirPipeline = VK_NULL_HANDLE;
   VkPipeline scannerPostPipeline = VK_NULL_HANDLE;
   VkPipeline grainPipeline = VK_NULL_HANDLE;
+  VkPipeline devStreakPipeline = VK_NULL_HANDLE;
   CoreFrameResources coreFrame;
   StaticFilmResources staticFilm;
   std::vector<float> hanatosSpectraData;
@@ -3119,6 +3137,7 @@ uint64_t VulkanRenderer::Impl::transientAllocationBytes() const {
   add(coreFrame.grainLayerB);
   add(coreFrame.frameFloats);
   add(coreFrame.frameInts);
+  add(coreFrame.devStreakData);
   return bytes;
 }
 
@@ -3220,6 +3239,7 @@ void VulkanRenderer::Impl::clearBackendAliases() {
   dirShaderModule = VK_NULL_HANDLE;
   scannerPostShaderModule = VK_NULL_HANDLE;
   grainShaderModule = VK_NULL_HANDLE;
+  devStreakShaderModule = VK_NULL_HANDLE;
   coreDescriptorSetLayout = VK_NULL_HANDLE;
   corePipelineLayout = VK_NULL_HANDLE;
   filmExposurePipeline = VK_NULL_HANDLE;
@@ -3230,6 +3250,7 @@ void VulkanRenderer::Impl::clearBackendAliases() {
   dirPipeline = VK_NULL_HANDLE;
   scannerPostPipeline = VK_NULL_HANDLE;
   grainPipeline = VK_NULL_HANDLE;
+  devStreakPipeline = VK_NULL_HANDLE;
   queueIndex = 0u;
 }
 
@@ -3260,6 +3281,7 @@ bool VulkanRenderer::Impl::attachBackend() {
   dirShaderModule = backend->dirShaderModule;
   scannerPostShaderModule = backend->scannerPostShaderModule;
   grainShaderModule = backend->grainShaderModule;
+  devStreakShaderModule = backend->devStreakShaderModule;
   coreDescriptorSetLayout = backend->coreDescriptorSetLayout;
   corePipelineLayout = backend->corePipelineLayout;
   filmExposurePipeline = backend->filmExposurePipeline;
@@ -3270,6 +3292,7 @@ bool VulkanRenderer::Impl::attachBackend() {
   dirPipeline = backend->dirPipeline;
   scannerPostPipeline = backend->scannerPostPipeline;
   grainPipeline = backend->grainPipeline;
+  devStreakPipeline = backend->devStreakPipeline;
   return createCommandPool();
 }
 
@@ -3329,7 +3352,8 @@ bool VulkanRenderer::Impl::createCorePipelines() {
       diffusionPipeline == VK_NULL_HANDLE ||
       dirPipeline == VK_NULL_HANDLE ||
       scannerPostPipeline == VK_NULL_HANDLE ||
-      grainPipeline == VK_NULL_HANDLE) {
+      grainPipeline == VK_NULL_HANDLE ||
+      devStreakPipeline == VK_NULL_HANDLE) {
     lastError = "Shared Vulkan core pipelines are not available.";
     return false;
   }
@@ -4350,6 +4374,8 @@ bool VulkanRenderer::Impl::ensureCoreFrameResources() {
     for (uint32_t setIndex = 0; setIndex < kCoreGrainSetCount; ++setIndex) {
       coreFrame.grainDescriptorSets[setIndex] = descriptorSets[descriptorSetOffset + setIndex];
     }
+    descriptorSetOffset += kCoreGrainSetCount;
+    coreFrame.devStreakDescriptorSet = descriptorSets[descriptorSetOffset];
   }
 
   if (coreFrame.formatDescriptorPool == VK_NULL_HANDLE) {
@@ -4447,6 +4473,7 @@ void VulkanRenderer::Impl::destroyCoreFrameResources() {
     coreFrame.dirDescriptorSets.fill(VK_NULL_HANDLE);
     coreFrame.scannerPostDescriptorSets.fill(VK_NULL_HANDLE);
     coreFrame.grainDescriptorSets.fill(VK_NULL_HANDLE);
+    coreFrame.devStreakDescriptorSet = VK_NULL_HANDLE;
   }
   if (coreFrame.formatDescriptorPool != VK_NULL_HANDLE) {
     vkDestroyDescriptorPool(device, coreFrame.formatDescriptorPool, nullptr);
@@ -4466,6 +4493,7 @@ void VulkanRenderer::Impl::destroyCoreFrameResources() {
   destroyScratchBuffer(coreFrame.scannerPostA);
   destroyScratchBuffer(coreFrame.dirCorrectedDensityCurves);
   destroyScratchBuffer(coreFrame.dirFloats);
+  destroyScratchBuffer(coreFrame.devStreakData);
   destroyScratchBuffer(coreFrame.printDiffusionComponents);
   destroyScratchBuffer(coreFrame.printDiffusionInfo);
   destroyScratchBuffer(coreFrame.cameraDiffusionComponents);
@@ -4906,6 +4934,48 @@ bool VulkanRenderer::Impl::renderCoreBootstrap(
      anyDiffusionComponentDownsamples(printDiffusionComponents, blurDownsample));
   const bool dirFeatureEnabled = envFlagEnabledOrDefault("SPEKTRAFILM_VULKAN_DIR_PASS", true);
   const bool dirPath = dirFeatureEnabled && !finalProcessNegative && params.dirCouplersAmount > 0.0f;
+  // Developer streaks: per-frame exposure-offset grid applied in place to the film log
+  // exposure right before development (so DIR re-development and grain inherit it).
+  std::vector<float> devStreakData;
+  if (params.devStreakEnabled && !finalProcessNegative) {
+    DevStreakSettings streak;
+    streak.enabled = true;
+    streak.strength = std::clamp(params.devStreakStrength, 0.0f, 1.0f);
+    streak.formatLongEdgeMm = devStreakFormatLongEdgeMm(static_cast<int32_t>(params.filmFormat));
+    streak.seed = params.devStreakSeed;
+    streak.frame = params.devStreakAnimate ? static_cast<int64_t>(std::llround(time)) : 0;
+    streak.amount = params.devStreakAmount;
+    streak.widthScale = params.devStreakWidth;
+    streak.lengthScale = params.devStreakLength;
+    streak.flicker = params.devStreakFlicker;
+    streak.colorVariation = params.devStreakColor;
+    streak.temporalHold = params.devStreakHold;
+    const std::vector<float> &grid = cachedDevStreakField(streak);
+    if (!grid.empty()) {
+      devStreakData.assign(16u + grid.size(), 0.0f);
+      devStreakData[0] = static_cast<float>(devstreak::kGridX);
+      devStreakData[1] = static_cast<float>(devstreak::kGridY);
+      devStreakData[2] = resolvedEnlargerScale(params);
+      devStreakData[3] = params.enlargerOffsetXPercent;
+      devStreakData[4] = params.enlargerOffsetYPercent;
+      // Toe boost: measured streaks grow in the negative's toe (x1.4 at -3, x2.4 at -4, x3.1 at -5 stops,
+      // exposure-equivalent). Values fitted end-to-end through Spektrafilm's own film/print curves.
+      devStreakData[5] = 3.0f;           // toe boost amplitude
+      devStreakData[6] = -3.36f;         // toe centre, stops from mid grey
+      devStreakData[7] = 0.555f;         // toe width, stops
+      // Film log exposure of an 18 % grey at 0 EV. Spektrafilm's raw scale puts it ~2.35 stops above
+      // log10(0.184) (measured with SPEKTRAFILM_DEBUG_TOE). Fixed in log exposure: the toe is a film property.
+      devStreakData[8] = -0.0278f;
+      if (const char *dbg = std::getenv("SPEKTRAFILM_DEBUG_TOE")) {  // "A,S0,W,logMid" (development/testing only)
+        float a = 0.f, s0 = 0.f, w = 0.f, lm = 0.f;
+        if (std::sscanf(dbg, "%f,%f,%f,%f", &a, &s0, &w, &lm) == 4) {
+          devStreakData[5] = a; devStreakData[6] = s0; devStreakData[7] = w; devStreakData[8] = lm;
+        }
+      }
+      std::copy(grid.begin(), grid.end(), devStreakData.begin() + 16);
+    }
+  }
+  const bool devStreakPath = !devStreakData.empty();
   const bool dirBlurPath = dirPath && params.dirCouplersDiffusionUm > 0.0f;
   const bool dirTailPath =
     dirBlurPath &&
@@ -5239,6 +5309,16 @@ bool VulkanRenderer::Impl::renderCoreBootstrap(
         )) {
       return false;
     }
+  }
+
+  if (devStreakPath &&
+      !uploadScratchBuffer(
+        coreFrame.devStreakData,
+        devStreakData.data(),
+        static_cast<VkDeviceSize>(devStreakData.size() * sizeof(float)),
+        "developer streak field"
+      )) {
+    return false;
   }
 
   if (frameParamsEnabled) {
@@ -5752,7 +5832,12 @@ bool VulkanRenderer::Impl::renderCoreBootstrap(
   frameIntsBufferInfo.offset = 0;
   frameIntsBufferInfo.range = coreFrame.frameInts.capacity;
 
-  std::array<VkWriteDescriptorSet, 460> writes{};
+  VkDescriptorBufferInfo devStreakBufferInfo{};
+  devStreakBufferInfo.buffer = coreFrame.devStreakData.buffer;
+  devStreakBufferInfo.offset = 0;
+  devStreakBufferInfo.range = devStreakPath ? static_cast<VkDeviceSize>(devStreakData.size() * sizeof(float)) : VK_WHOLE_SIZE;
+
+  std::array<VkWriteDescriptorSet, 464> writes{};
   uint32_t writeCount = 0;
   auto writeStorageBuffer = [&](VkDescriptorSet set, uint32_t binding, const VkDescriptorBufferInfo &bufferInfo) {
     VkWriteDescriptorSet &write = writes[writeCount++];
@@ -5777,6 +5862,10 @@ bool VulkanRenderer::Impl::renderCoreBootstrap(
   writeStorageBuffer(coreFrame.developDescriptorSet, 1, developOutputBufferInfo);
   writeStorageBuffer(coreFrame.developDescriptorSet, 2, logExposureBufferInfo);
   writeStorageBuffer(coreFrame.developDescriptorSet, 3, densityCurvesBufferInfo);
+  if (devStreakPath) {
+    writeStorageBuffer(coreFrame.devStreakDescriptorSet, 0, developInputBufferInfo);
+    writeStorageBuffer(coreFrame.devStreakDescriptorSet, 1, devStreakBufferInfo);
+  }
   auto writePrintScanSet = [&](
     VkDescriptorSet set,
     const VkDescriptorBufferInfo &inputBufferInfo,
@@ -6469,6 +6558,18 @@ bool VulkanRenderer::Impl::renderCoreBootstrap(
         dispatchHalation(coreFrame.halationDescriptorSets[9], kHalationOpRawToLog, 0u, 0u);
       }
       consumeSpatialRadius(halationRadius);
+    }
+
+    if (devStreakPath) {
+      insertComputeBarrier();
+      pushConstants._pad0 = 0u;
+      pushConstants._pad1 = 0u;
+      pushConstants._pad2 = 0u;
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, devStreakPipeline);
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, corePipelineLayout, 0, 1, &coreFrame.devStreakDescriptorSet, 0, nullptr);
+      vkCmdPushConstants(commandBuffer, corePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+      vkCmdDispatch(commandBuffer, activeGroupsX(), activeGroupsY(), 1);
+      insertComputeBarrier();
     }
 
     pushConstants._pad0 = 0u;

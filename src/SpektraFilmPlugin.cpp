@@ -248,6 +248,16 @@ inline constexpr ParamMetadata kParamMetadata[] = {
   {"grainMicroStructure", "grainGroup", kParamTagNone},
   {"grainSeed", "grainGroup", kParamTagNone},
   {"grainAnimate", "grainGroup", kParamTagNone},
+  {"devStreakEnabled", "devStreakGroup", flow()},
+  {"devStreakStrength", "devStreakGroup", flow()},
+  {"devStreakSeed", "devStreakGroup", flow()},
+  {"devStreakAnimate", "devStreakGroup", flow()},
+  {"devStreakAmount", "devStreakGroup", kParamTagNone},
+  {"devStreakWidth", "devStreakGroup", kParamTagNone},
+  {"devStreakLength", "devStreakGroup", kParamTagNone},
+  {"devStreakFlicker", "devStreakGroup", kParamTagNone},
+  {"devStreakColor", "devStreakGroup", kParamTagNone},
+  {"devStreakHold", "devStreakGroup", kParamTagNone},
   {"grainSynthesisSize", "grainGroup", development()},
   {"grainSynthesisAmount", "grainGroup", development()},
   {"grainSynthesisSharpness", "grainGroup", development()},
@@ -524,6 +534,16 @@ inline constexpr ParamDefault kParamDefaults[] = {
   double2DDefault("grainMicroStructure", 0.2, 30.0),
   intDefault("grainSeed", 0),
   boolDefault("grainAnimate", true),
+  boolDefault("devStreakEnabled", false),
+  doubleDefault("devStreakStrength", 50.0),
+  intDefault("devStreakSeed", 1),
+  boolDefault("devStreakAnimate", true),
+  doubleDefault("devStreakAmount", 1.0),
+  doubleDefault("devStreakWidth", 1.0),
+  doubleDefault("devStreakLength", 1.0),
+  doubleDefault("devStreakFlicker", 1.0),
+  doubleDefault("devStreakColor", 1.0),
+  doubleDefault("devStreakHold", 1.0),
   doubleDefault("grainSynthesisSize", 1.0),
   doubleDefault("grainSynthesisAmount", 1.0),
   doubleDefault("grainSynthesisSharpness", 1.0),
@@ -796,6 +816,17 @@ struct InstanceData {
   OfxParamHandle grainMicroStructure = nullptr;
   OfxParamHandle grainSeed = nullptr;
   OfxParamHandle grainAnimate = nullptr;
+  OfxParamHandle devStreakGroup = nullptr;
+  OfxParamHandle devStreakEnabled = nullptr;
+  OfxParamHandle devStreakStrength = nullptr;
+  OfxParamHandle devStreakSeed = nullptr;
+  OfxParamHandle devStreakAnimate = nullptr;
+  OfxParamHandle devStreakAmount = nullptr;
+  OfxParamHandle devStreakWidth = nullptr;
+  OfxParamHandle devStreakLength = nullptr;
+  OfxParamHandle devStreakFlicker = nullptr;
+  OfxParamHandle devStreakColor = nullptr;
+  OfxParamHandle devStreakHold = nullptr;
   OfxParamHandle grainSynthesisSize = nullptr;
   OfxParamHandle grainSynthesisAmount = nullptr;
   OfxParamHandle grainSynthesisSharpness = nullptr;
@@ -1292,6 +1323,17 @@ void syncConditionalParamVisibility(InstanceData *data) {
   setParamSecretForFlavor(data->grainMicroStructure, "grainMicroStructure", processNegative);
   setParamSecretForFlavor(data->grainSeed, "grainSeed", processNegative);
   setParamSecretForFlavor(data->grainAnimate, "grainAnimate", processNegative);
+  setParamSecretForFlavor(data->devStreakGroup, "devStreakGroup", processNegative);
+  setParamSecretForFlavor(data->devStreakEnabled, "devStreakEnabled", processNegative);
+  setParamSecretForFlavor(data->devStreakStrength, "devStreakStrength", processNegative);
+  setParamSecretForFlavor(data->devStreakSeed, "devStreakSeed", processNegative);
+  setParamSecretForFlavor(data->devStreakAnimate, "devStreakAnimate", processNegative);
+  setParamSecretForFlavor(data->devStreakAmount, "devStreakAmount", processNegative);
+  setParamSecretForFlavor(data->devStreakWidth, "devStreakWidth", processNegative);
+  setParamSecretForFlavor(data->devStreakLength, "devStreakLength", processNegative);
+  setParamSecretForFlavor(data->devStreakFlicker, "devStreakFlicker", processNegative);
+  setParamSecretForFlavor(data->devStreakColor, "devStreakColor", processNegative);
+  setParamSecretForFlavor(data->devStreakHold, "devStreakHold", processNegative);
 
   setParamSecretForFlavor(data->grainSynthesisGroup, "grainSynthesisGroup", processNegative || !flavorAllowsDevelopmentControls());
   setParamSecretForFlavor(data->grainSynthesisSamples, "grainSynthesisSamples", processNegative);
@@ -1700,6 +1742,16 @@ spektrafilm::RenderParams readParams(InstanceData *data, OfxTime time) {
   params.grainMicroStructureSigmaNm = static_cast<float>(microStructure[1]);
   params.grainSeed = static_cast<uint32_t>(getIntAtTime(data->grainSeed, time, 1));
   params.grainAnimate = getBoolAtTime(data->grainAnimate, time, false);
+  params.devStreakEnabled = getBoolAtTime(data->devStreakEnabled, time, false);
+  params.devStreakStrength = static_cast<float>(getDoubleAtTime(data->devStreakStrength, time, 50.0) / 100.0);
+  params.devStreakSeed = static_cast<uint32_t>(std::max(getIntAtTime(data->devStreakSeed, time, 1), 0));
+  params.devStreakAnimate = getBoolAtTime(data->devStreakAnimate, time, true);
+  params.devStreakAmount = static_cast<float>(getDoubleAtTime(data->devStreakAmount, time, 1.0));
+  params.devStreakWidth = static_cast<float>(getDoubleAtTime(data->devStreakWidth, time, 1.0));
+  params.devStreakLength = static_cast<float>(getDoubleAtTime(data->devStreakLength, time, 1.0));
+  params.devStreakFlicker = static_cast<float>(getDoubleAtTime(data->devStreakFlicker, time, 1.0));
+  params.devStreakColor = static_cast<float>(getDoubleAtTime(data->devStreakColor, time, 1.0));
+  params.devStreakHold = static_cast<float>(getDoubleAtTime(data->devStreakHold, time, 1.0));
   params.grainSynthesisSize = static_cast<float>(getDoubleAtTime(data->grainSynthesisSize, time, 1.0));
   params.grainSynthesisAmount = static_cast<float>(getDoubleAtTime(data->grainSynthesisAmount, time, 1.0));
   params.grainSynthesisSharpness = static_cast<float>(getDoubleAtTime(data->grainSynthesisSharpness, time, 1.0));
@@ -3711,6 +3763,7 @@ spektrafilm::RenderParams lutSafeParams(spektrafilm::RenderParams params) {
   params.grainEnabled = false;
   params.grainModel = spektrafilm::GrainModel::Preview;
   params.grainAnimate = false;
+  params.devStreakEnabled = false;
   params.halationEnabled = false;
   params.scatterAmount = 0.0f;
   params.halationAmount = 0.0f;
@@ -3985,6 +4038,17 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
   cacheParam(paramSet, "grainMicroStructure", data->grainMicroStructure);
   cacheParam(paramSet, "grainSeed", data->grainSeed);
   cacheParam(paramSet, "grainAnimate", data->grainAnimate);
+  cacheParam(paramSet, "devStreakGroup", data->devStreakGroup);
+  cacheParam(paramSet, "devStreakEnabled", data->devStreakEnabled);
+  cacheParam(paramSet, "devStreakStrength", data->devStreakStrength);
+  cacheParam(paramSet, "devStreakSeed", data->devStreakSeed);
+  cacheParam(paramSet, "devStreakAnimate", data->devStreakAnimate);
+  cacheParam(paramSet, "devStreakAmount", data->devStreakAmount);
+  cacheParam(paramSet, "devStreakWidth", data->devStreakWidth);
+  cacheParam(paramSet, "devStreakLength", data->devStreakLength);
+  cacheParam(paramSet, "devStreakFlicker", data->devStreakFlicker);
+  cacheParam(paramSet, "devStreakColor", data->devStreakColor);
+  cacheParam(paramSet, "devStreakHold", data->devStreakHold);
   cacheParam(paramSet, "grainSynthesisSize", data->grainSynthesisSize);
   cacheParam(paramSet, "grainSynthesisAmount", data->grainSynthesisAmount);
   cacheParam(paramSet, "grainSynthesisSharpness", data->grainSynthesisSharpness);
@@ -4893,6 +4957,7 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle) {
   defineGroup(paramSet, "couplerGroup", "DIR Couplers", false);
   defineGroup(paramSet, "grainGroup", "Grain", true);
   defineGroup(paramSet, "grainSynthesisGroup", "Grain Synthesis", false);
+  defineGroup(paramSet, "devStreakGroup", "Developer Streaks", false);
   defineGroup(paramSet, "halationGroup", "Halation", false);
   defineGroup(paramSet, "diffusionGroup", "Diffusion", false);
   defineGroup(paramSet, "scannerGroup", "Scanner", false);
@@ -5076,6 +5141,16 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle) {
   defineDouble2D(paramSet, "grainMicroStructure", "Micro Structure", 0.2, 30.0, "grainGroup");
   defineInt(paramSet, kGrainSeedParamName, "Seed", descriptorGrainSeedDefault(), kGrainSeedMin, kGrainSeedMax, "grainGroup");
   defineBool(paramSet, "grainAnimate", "Animate", true, "grainGroup");
+  defineBool(paramSet, "devStreakEnabled", "Enabled", false, "devStreakGroup");
+  defineDouble(paramSet, "devStreakStrength", "Strength", 50.0, 0.0, 100.0, "devStreakGroup");
+  defineInt(paramSet, "devStreakSeed", "Seed", 1, 0, 1000000, "devStreakGroup");
+  defineBool(paramSet, "devStreakAnimate", "Animate", true, "devStreakGroup");
+  defineDouble(paramSet, "devStreakAmount", "Amount", 1.0, 0.0, 4.0, "devStreakGroup");
+  defineDouble(paramSet, "devStreakWidth", "Streak Width", 1.0, 0.25, 4.0, "devStreakGroup");
+  defineDouble(paramSet, "devStreakLength", "Streak Length", 1.0, 0.25, 4.0, "devStreakGroup");
+  defineDouble(paramSet, "devStreakFlicker", "Frame Flicker", 1.0, 0.0, 4.0, "devStreakGroup");
+  defineDouble(paramSet, "devStreakColor", "Color Variation", 1.0, 0.0, 1.0, "devStreakGroup");
+  defineDouble(paramSet, "devStreakHold", "Persistence", 1.0, 0.25, 4.0, "devStreakGroup");
   defineDouble(paramSet, "grainSynthesisSize", "Synthesis Size", 1.0, 0.25, 4.0, "grainGroup");
   defineDouble(paramSet, "grainSynthesisAmount", "Synthesis Amount", 1.0, 0.0, 3.0, "grainGroup");
   defineDouble(paramSet, "grainSynthesisSharpness", "Synthesis Sharpness", 1.0, 0.25, 4.0, "grainGroup");

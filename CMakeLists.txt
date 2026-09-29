@@ -333,6 +333,7 @@ elseif(SPEKTRAFILM_USE_VULKAN)
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraDir.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraScannerPost.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraGrain.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/SpektraDevStreak.comp"
   )
   set(SPEKTRAFILM_VULKAN_SPV_FILES)
   set(SPEKTRAFILM_VULKAN_COPY_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraCopy.comp.spv")
@@ -345,6 +346,7 @@ elseif(SPEKTRAFILM_USE_VULKAN)
   set(SPEKTRAFILM_VULKAN_DIR_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraDir.comp.spv")
   set(SPEKTRAFILM_VULKAN_SCANNER_POST_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraScannerPost.comp.spv")
   set(SPEKTRAFILM_VULKAN_GRAIN_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraGrain.comp.spv")
+  set(SPEKTRAFILM_VULKAN_DEV_STREAK_SPV "${CMAKE_CURRENT_BINARY_DIR}/vulkan/SpektraDevStreak.comp.spv")
   if(NOT SPEKTRAFILM_GLSLC_EXECUTABLE AND NOT SPEKTRAFILM_GLSLANG_VALIDATOR_EXECUTABLE)
     message(FATAL_ERROR "A Vulkan GLSL compiler is required. Install the Vulkan SDK so glslc or glslangValidator is on PATH.")
   endif()
@@ -730,6 +732,9 @@ function(add_vulkan_bundle_resources target artifact_name plugin_manifest plugin
             "${SPEKTRAFILM_VULKAN_GRAIN_SPV}"
             "${resources_dir}/shaders/SpektraGrain.comp.spv"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${SPEKTRAFILM_VULKAN_DEV_STREAK_SPV}"
+            "${resources_dir}/shaders/SpektraDevStreak.comp.spv"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${plugin_manifest}"
             "${resources_dir}/plugin_manifest.json"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -1061,6 +1066,9 @@ elseif(SPEKTRAFILM_USE_VULKAN)
             "${SPEKTRAFILM_VULKAN_GRAIN_SPV}"
             "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraGrain.comp.spv"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${SPEKTRAFILM_VULKAN_DEV_STREAK_SPV}"
+            "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/shaders/SpektraDevStreak.comp.spv"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SPEKTRAFILM_GENERATED_HANATOS_LUT}"
             "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/SpektraHanatos2025Spectra.f32"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -1068,4 +1076,17 @@ elseif(SPEKTRAFILM_USE_VULKAN)
             "$<TARGET_FILE_DIR:SpektraVulkanCopyHarness>/SpektraOutputGamutCompression.f32"
     VERBATIM
   )
+endif()
+
+# Developer-streak runtime test (Linux developer builds only)
+if(SPEKTRAFILM_USE_VULKAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(SpektraDevStreakTest
+    tools/SpektraDevStreakTest.cpp
+    src/SpektraVulkanRenderer.cpp
+    "${SPEKTRAFILM_GENERATED_PROFILE_CURVES}"
+    "${SPEKTRAFILM_GENERATED_PROFILE_COUNTS}"
+  )
+  target_include_directories(SpektraDevStreakTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_link_libraries(SpektraDevStreakTest PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
+  add_dependencies(SpektraDevStreakTest SpektraFilmVulkanShaders)
 endif()
